@@ -13,18 +13,20 @@
                 if (string.IsNullOrWhiteSpace(line))
                     return;
 
-                Console.WriteLine("Parsing: " + line);
-
                 var parser = new Parser(line);
                 var syntaxTree = parser.Parse();
-
-                Console.WriteLine("Parsed");
 
                 var color = Console.ForegroundColor;
                 Console.ForegroundColor = ConsoleColor.DarkGray;
                 PrettyPrint(syntaxTree.Root, "");
 
-                if (syntaxTree.Diagnostics.Any())
+                if (!syntaxTree.Diagnostics.Any())
+                {
+                    var evaluator = new Evaluator(syntaxTree.Root);
+                    var result = evaluator.Evaluate();
+                    Console.WriteLine($"Result: {result}");
+                }
+                else
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
 
@@ -148,7 +150,10 @@
                 var length = _position - start;
                 var text = _text.Substring(start, length);
 
-                int.TryParse(text, out var value);
+                if (!int.TryParse(text, out var value))
+                {
+                    _diagnostics.Add($"The number {_text} cannot be represented by an Int32.");
+                }
 
                 return new SyntaxToken(SyntaxKind.NumberToken, start, text, value);
             }
@@ -241,6 +246,21 @@
             yield return OperatorToken;
             yield return Right;
         }
+
+        public static bool IsOperatorTokenSupported(SyntaxToken op)
+        {
+            switch (op.Kind)
+            {
+                case SyntaxKind.PlusToken:
+                case SyntaxKind.MinusToken:
+                case SyntaxKind.StarToken:
+                case SyntaxKind.SlashToken:
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
     }
 
     sealed class SyntaxTree
@@ -331,10 +351,9 @@
 
         private ExpressionSyntax ParseExpression()
         {
-            Console.WriteLine("Parse()");
             var left = ParsePrimaryExpression();
 
-            while (Current.Kind == SyntaxKind.PlusToken || Current.Kind == SyntaxKind.MinusToken)
+            while (BinaryExpressionSyntax.IsOperatorTokenSupported(Current))
             {
                 var operatorToken = NextToken();
                 var right = ParsePrimaryExpression();
@@ -342,8 +361,47 @@
                 left = new BinaryExpressionSyntax(left, operatorToken, right);
             }
 
-            Console.WriteLine("Parse() completed");
             return left;
+        }
+    }
+
+    class Evaluator
+    {
+        private readonly ExpressionSyntax _root;
+
+        public Evaluator(ExpressionSyntax root)
+        {
+            _root = root;
+        }
+
+        public int Evaluate()
+        {
+            return EvaluateExpressionInt32(_root);
+        }
+
+        private int EvaluateExpressionInt32(ExpressionSyntax node)
+        {
+            if (node is NumberExpressionSyntax n)
+            {
+                return (int)n.NumberToken.Value;
+            }
+
+            if (node is BinaryExpressionSyntax b)
+            {
+                var left = EvaluateExpressionInt32(b.Left);
+                var right = EvaluateExpressionInt32(b.Right);
+
+                return b.OperatorToken.Kind switch
+                {
+                    SyntaxKind.PlusToken => left + right,
+                    SyntaxKind.MinusToken => left - right,
+                    SyntaxKind.StarToken => left * right,
+                    SyntaxKind.SlashToken => left / right,
+                    _ => throw new InvalidOperationException($"Unexpected binary operator: <{b.OperatorToken.Kind}>"),
+                };
+            }
+
+            throw new InvalidOperationException($"Unexpected expression: <{node.Kind}>");
         }
     }
 }
