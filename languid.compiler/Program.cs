@@ -2,23 +2,6 @@
 {
     class Program
     {
-        private static void PrettyPrint(SyntaxNode node, string indent = "")
-        {
-            Console.Write(indent + node.Kind);
-
-            if (node is SyntaxToken t && t.Value is not null)
-            {
-                Console.Write($" {t.Value}");
-            }
-
-            Console.WriteLine();
-
-            indent += "    ";
-
-            foreach (var child in node.GetChildren())
-                PrettyPrint(child, indent);
-        }
-
         public static void Main(string[] _)
         {
             while (true)
@@ -30,24 +13,51 @@
                 if (string.IsNullOrWhiteSpace(line))
                     return;
 
+                Console.WriteLine("Parsing: " + line);
+
                 var parser = new Parser(line);
-                var expression = parser.Parse();
+                var syntaxTree = parser.Parse();
+
+                Console.WriteLine("Parsed");
 
                 var color = Console.ForegroundColor;
                 Console.ForegroundColor = ConsoleColor.DarkGray;
-                PrettyPrint(expression, "");
-                Console.ForegroundColor = color;
+                PrettyPrint(syntaxTree.Root, "");
 
-                var lexer = new Lexer(line);
-                SyntaxToken token;
-
-                do
+                if (syntaxTree.Diagnostics.Any())
                 {
-                    token = lexer.NextToken();
-                    Console.WriteLine($"{token.Kind}: '{token.Text}'");
+                    Console.ForegroundColor = ConsoleColor.Red;
+
+                    foreach (var diag in syntaxTree.Diagnostics)
+                    {
+                        Console.WriteLine(diag);
+                    }
                 }
-                while (token.Kind != SyntaxKind.EndOfFileToken);
+
+                Console.ForegroundColor = color;
             }
+        }
+
+        private static void PrettyPrint(SyntaxNode node, string indent = "", bool isLast = true)
+        {
+            var marker =  isLast ? "└─ " : "├─ ";
+
+            Console.Write(indent);
+            Console.Write(marker);
+            Console.Write(node.Kind);
+
+            if (node is SyntaxToken t && t.Value is not null)
+            {
+                Console.Write($" {t.Value}");
+            }
+
+            Console.WriteLine();
+
+            indent += isLast ? "   " : "│  ";
+            var lastChild = node.GetChildren().LastOrDefault();
+
+            foreach (var child in node.GetChildren())
+                PrettyPrint(child, indent, child == lastChild);
         }
     }
 
@@ -94,11 +104,14 @@
     {
         private readonly string _text;
         private int _position;
+        private List<string> _diagnostics = new();
 
         public Lexer(string text)
         {
             _text = text;
         }
+
+        public IEnumerable<string> Diagnostics => _diagnostics;
 
         private char Current
         {
@@ -160,16 +173,23 @@
                 return token;
             };
 
-            return Current switch
+            var singleCharacterToken = Current switch
             {
-                '+' => getSingleCharacterToken(SyntaxKind.PlusToken),
-                '-' => getSingleCharacterToken(SyntaxKind.MinusToken),
-                '*' => getSingleCharacterToken(SyntaxKind.StarToken),
-                '/' => getSingleCharacterToken(SyntaxKind.SlashToken),
-                '(' => getSingleCharacterToken(SyntaxKind.OpenParenToken),
-                ')' => getSingleCharacterToken(SyntaxKind.CloseParenToken),
-                _   => getSingleCharacterToken(SyntaxKind.BadToken),
+                '+' => SyntaxKind.PlusToken,
+                '-' => SyntaxKind.MinusToken,
+                '*' => SyntaxKind.StarToken,
+                '/' => SyntaxKind.SlashToken,
+                '(' => SyntaxKind.OpenParenToken,
+                ')' => SyntaxKind.CloseParenToken,
+                _   => SyntaxKind.BadToken,
             };
+
+            if (singleCharacterToken == SyntaxKind.BadToken)
+            {
+                _diagnostics.Add($"ERROR: bad character input: {Current}");
+            }
+
+            return getSingleCharacterToken(singleCharacterToken);
         }
     }
 
@@ -223,10 +243,25 @@
         }
     }
 
+    sealed class SyntaxTree
+    {
+        public SyntaxTree(IEnumerable<string> diagnostics, ExpressionSyntax root, SyntaxToken endOfFileToken)
+        {
+            Diagnostics = diagnostics.ToArray();
+            Root = root;
+            EndOfFileToken = endOfFileToken;
+        }
+
+        public IReadOnlyList<string> Diagnostics { get; }
+        public ExpressionSyntax Root { get; }
+        public SyntaxToken EndOfFileToken { get; }
+    }
+
     class Parser
     {
         private SyntaxToken[] _tokens;
         private int _position;
+        private List<string> _diagnostics = new();
 
         public Parser(string text)
         {
@@ -243,7 +278,6 @@
                 {
                     case SyntaxKind.BadToken:
                     case SyntaxKind.WhiteSpaceToken:
-                    case SyntaxKind.EndOfFileToken:
                         break;
 
                     default:
@@ -254,7 +288,10 @@
             while (token.Kind != SyntaxKind.EndOfFileToken);
 
             _tokens = tokens.ToArray();
+            _diagnostics.AddRange(lexer.Diagnostics);
         }
+
+        public IEnumerable<string> Diagnostics => _diagnostics;
 
         private SyntaxToken Peek(int offset = 0) =>
             _tokens[Math.Min(_position + offset, _tokens.Length - 1)];
@@ -274,6 +311,7 @@
             if (Current.Kind == kind)
                 return NextToken();
 
+            _diagnostics.Add($"ERROR: Unexpected token: <{Current.Kind}>, expected: <{kind}>");
             return new SyntaxToken(kind, Current.Position, null, null);
         }
 
@@ -283,8 +321,17 @@
             return new NumberExpressionSyntax(numberToken);
         }
 
-        public ExpressionSyntax Parse()
+        public SyntaxTree Parse()
         {
+            var expression = ParseExpression();
+            var endOfFileToken = Match(SyntaxKind.EndOfFileToken);
+
+            return new SyntaxTree(_diagnostics, expression, endOfFileToken);
+        }
+
+        private ExpressionSyntax ParseExpression()
+        {
+            Console.WriteLine("Parse()");
             var left = ParsePrimaryExpression();
 
             while (Current.Kind == SyntaxKind.PlusToken || Current.Kind == SyntaxKind.MinusToken)
@@ -295,6 +342,7 @@
                 left = new BinaryExpressionSyntax(left, operatorToken, right);
             }
 
+            Console.WriteLine("Parse() completed");
             return left;
         }
     }
